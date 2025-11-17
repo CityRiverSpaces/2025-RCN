@@ -1,0 +1,12 @@
+---
+title: "CRiSp - an overview"
+format: html
+bibliography: references.bib
+csl: apa.csl
+---
+
+```{r}
+library(rcrisp)
+```
+
+## References
