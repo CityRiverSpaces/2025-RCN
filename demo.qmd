@@ -1,12 +1,318 @@
 ---
-title: "CRiSp - an overview"
-format: html
+title: "`rcrisp`: a tool for automated morphological delineation of urban river spaces"
+author:
+  - name: Claudiu Forgaci
+    email: c.forgaci@tudelft.nl
+    affiliations: Delft University of Technology
+    orcid: 0000-0003-3218-5102
+  - name: Francesco Nattino
+    email: f.nattino@esciencecenter.nl
+    affiliations: Netherlands eScience Center
+    orcid: 0000-0003-3286-0139
+  - name: Yehan Wu
+    email: y.wu-13@tudelft.nl
+    affiliations: Delft University of Technology
+    orcid: 0000-0003-4063-7535
+date: 2025-11-18
+format:
+    html:
+        code-fold: false
+        comment: "#>"
+        warning: false
 bibliography: references.bib
 csl: apa.csl
 ---
 
+## Introduction
+
+This is a computational notebook that illustrates how to use [the `rcrisp` package](https://github.com/CityRiverSpaces/rcrisp) in a programming enviroment. A computational notebook bundles together text, code cells (here written using [the R programming language](https://www.r-project.org/)), and code output, such as figures or interactive maps.
+
+You can find the source code of this document, as well as information on how to setup a programming environment with all required software dependencies in a public [GitHub repository](https://github.com/CityRiverSpaces/2025-RCN). This notebook is executed, rendered, and published online using the [Quarto](https://quarto.org/) software.
+
+::: {.callout-tip title="`rcrisp` as code"}
+Writing programming scripts or computational notebooks to perform research tasks (`rcrisp` related, but not only!) allows one to automate tedious and error-prone tasks, making analyses workflows faster, scalable and reproducible!
+:::
+
+## Delineating urban river areas
+
+`rcrisp` implements three methods of morphological delineations of urban river areas [@forgaci2018], which are based on the following spatial units:
+
+1.  the river **corridor**,
+2.  the corridor **segments**,
+3.  the **river space**.
+
+These units are based on infrastructure data (street & rail network the former two, buildings the latter). In addition, `rcrisp` also makes use of digital terrain data to estimate the river **valley**, the edges of which are used to "guide" the delineation of the river corridor.
+
+## Data sources
+
+By default, `rcrisp` uses the following data sources:
+
+-   [OpenStreetMap](https://www.openstreetmap.org/) (OSM), mostly for street & railway network, river geometry, buildings;
+-   [GLO-30 Copernicus Digital Elevation Model (DEM)](https://dataspace.copernicus.eu/explore-data/data-collections/copernicus-contributing-missions/collections-description/COP-DEM) for the representation of the topographic surface of the area.
+
+.. but any other data sources could be used as well!
+
+## An example of delineation: the Dâmbovița river in Bucharest
+
+We start by importing the required software libraries: `rcrisp`, but also other R libraries for (geospatial) data analysis and visualization.
+
 ```{r}
 library(rcrisp)
+library(ggplot2)
+library(htmltools)
+library(leaflet)
+library(sf)
+library(tibble)
+```
+
+We also define some auxiliary functions that will facilitate the visualization of datasets on a base map:
+
+```{r}
+#| code-fold: true
+#| code-summary: "Code"
+#' Visualize one or more vector or raster datasets on a base map
+#'
+#' @param ... objects to display on a map. If the coordinate reference
+#'   system is missing, lat/lon coordinates will be assumed ("EPSG:4326")
+#' @param col Color (sequence) to use for the input object(s)
+#' @param label Labels to use for the input object(s). If a vector, use its
+#'   elements to label the object features
+#' @param map Leaflet map object where to plot the geospatial objects
+#'
+#' @return Leaflet map
+visualize <- function(..., col = NULL, label = NULL, map = NULL) {
+  # Pack input obhects in a list
+  geometries <- list(...)
+  ngeoms <- length(geometries)
+
+  # Determine the sequence of colors
+  colors <- get_colors(ngeoms, col = col)
+
+  # Initialize map
+  if (is.null(map)) map <- addTiles(leaflet())
+
+  # Loop over objects to plot
+  for (n in seq_len(ngeoms)) {
+    geometry <- geometries[[n]]
+    color <- colors[[n]]
+
+    if (inherits(geometry, "bbox")) {
+      # If a bounding box, convert it to polygon
+      map <- visualize(sf::st_as_sfc(geometry), col = color, map = map)
+    } else if (inherits(geometry, "sfnetwork")) {
+      # If a sfnetwork, extract edges and nodes
+      edges <- sf::st_as_sf(geometry, "edges")
+      labels <- get_edge_labels(edges)
+      map <- visualize(edges, col = color, label = labels, map = map)
+      nodes <- sf::st_as_sf(geometry, "nodes")
+      map <- visualize(nodes, col = color, label = seq_len(nrow(nodes)),
+                       map = map)
+    } else if (inherits(geometry, "SpatRaster")) {
+      map <- addRasterImage(map, geometry, opacity = 0.8)
+    } else if (inherits(geometry, "sf")) {
+      is_column_name <- (
+        !is.null(label) && (length(label) == 1) && (label %in% names(geometry))
+      )
+      if (is_column_name) label <- geometry[[label]]
+      map <- visualize(sf::st_geometry(geometry), col = col, label = label,
+                       map = map)
+    } else if (inherits(geometry, "sfc")) {
+      geometry_type <- sf::st_geometry_type(geometry, by_geometry = FALSE)
+      data <- as.latlon(geometry)
+      if (is.in("linestring", geometry_type)) {
+        map <- addPolylines(map, data = data, color = color,
+                                     label = label)
+      } else if (is.in("point", geometry_type)) {
+        map <- addCircles(map, data = data, color = col,
+                                   label = label)
+      } else if (is.in("polygon", geometry_type)) {
+        map <- addPolygons(map, data = data, color = col,
+                                    label = label)
+      } else {
+        stop(sprintf("Cannot plot geometry type: %s", geometry_type))
+      }
+    } else {
+      stop(paste0("Cannot plot data type ", class(geometry)))
+    }
+  }
+  map
+}
+
+#' @noRd
+get_colors <- function(num_geometries, col = NULL) {
+  if (is.null(col)) {
+    # If color is NULL, determine colors from a palette
+    factpal <- colorFactor(topo.colors(num_geometries),
+                                    factor(seq_len(num_geometries)))
+    col <- sapply(seq_len(num_geometries), factpal)
+  } else if (length(col) == 1) {
+    # If we got a single color, use it for all geometries
+    col <- rep(col, num_geometries)
+  }
+  # Make sure we have as many colors as geometries
+  stopifnot(length(col) == num_geometries)
+  col
+}
+
+#' @noRd
+is.in <- function(x, y) grepl(x, y, ignore.case = TRUE)
+
+#' @noRd
+as.latlon <- function(x) {
+  crs <- st_crs(x)
+  # If no CRS is present, set it to lat/lon
+  if (is.na(crs)) st_crs(x) <- st_crs("EPSG:4326")
+  st_transform(x, 4326)
+}
+
+#' @noRd
+get_edge_labels <- function(edges) {
+  ids <- seq_len(nrow(edges))
+  lapply(sprintf("<strong>%d</strong> %d -> %d", ids, edges$from, edges$to), HTML)
+}
+```
+
+The three types of morphological delineations described above can be carried out via the `delineate` function built in `rcrisp`, which works as main access point to the package functionality.
+
+Let's start by defining the name of a city and of a river which we aim to delineate:
+
+```{r}
+city_name <- "Bucharest"
+river_name <- "Dâmbovița"
+```
+
+We can carry out the delineation by calling the `delineate` function:
+
+```{r}
+delineations <- delineate(
+  city_name,
+  river_name,
+  corridor = TRUE,
+  segments = TRUE,
+  riverspace = TRUE
+)
+```
+
+Done! Let us visualize the results. `delineations` is a list, which contains:
+
+1\. The urban **corridor** surrounding the river, delineated on the street network along a path that is closest to the valley edge:
+
+```{r}
+visualize(delineations$corridor)
+```
+
+2\. The corridor **segments**, bounded by the main transversal streets:
+
+```{r}
+visualize(delineations$segments)
+```
+
+3\. The **river space**, i.e. the space between the river and the first line of buildings:
+
+```{r}
+visualize(delineations$riverspace)
+```
+
+## Comparing urban rivers: how green is the corridor?
+
+In order to illustrate the potential of `rcrisp` in cross-case analyses, we show how we can use its spatial delineation units to answer questions like: which of the following urban areas is "greenest" in the surroundings of the city river?
+
+```{r}
+city_river_names <- tribble(
+  ~city_name,       ~river_name,
+  "Bucharest",      "Dâmbovița",
+  "Warsaw",         "Wisła",
+  "Prague",         "Vltava",
+  "Roma",           "Tevere",
+  "Cairo, Egypt",   "Nile River",
+  "Madrid",         "Río Manzanares",
+  "Los Angeles",    "Los Angeles River",
+  "Paris",          "La Seine",
+  "Berlin",         "Spree",
+  "Rotterdam",      "Nieuwe Maas",
+)
+```
+
+We thus delineate the corridors of the ten urban rivers listed above:
+
+```{r}
+# Create a list to store all results
+corridors <- list()
+
+# Loop over city/river pairs
+for (i in seq(nrow(city_river_names))) {
+  city_name <- city_river_names$city_name[i]
+  river_name <- city_river_names$river_name[i]
+
+  # Run the delineation for the selected city and river
+  delineations_city <- delineate(
+    city_name = city_name,
+    river_name = river_name,
+    corridor = TRUE,
+  )
+
+  # Extract corridor, tranform to lat/lon
+  corridor <- st_transform(delineations_city$corridor, "EPSG:4326")
+
+  # Record corridor for later use
+  corridors[[city_name]] <- corridor
+}
+```
+
+Let's visualize the results on a map:
+
+```{r}
+centroids <- do.call(c, lapply(corridors, st_centroid))
+map <- do.call(visualize, corridors)
+addMarkers(map, data = centroids)
+```
+
+For each corridor, we now retrieve landuse information from OSM to identify parks and other green areas.
+
+```{r}
+green_areas <- list()
+
+# Loop over the delineated corridor
+for (i in seq(length(corridors))) {
+  city_name <- names(corridors[i])
+  corridor <- corridors[[i]]
+
+  # Retrieve footprints of areas with the following tags
+  parks <- osmdata_as_sf("leisure", "park", aoi = corridor)
+  natural <- osmdata_as_sf("natural", c("grassland", "woodland", "wood"), aoi = corridor)
+
+  # Merge all footprints of "green" areas, intersecting with the corridor
+  all <- c(parks$osm_polygons$geometry, natural$osm_polygons$geometry)
+  green_areas[[city_name]] <- st_intersection(all, corridor) |>
+    st_make_valid()
+}
+```
+
+For example, the green areas in the surrounding of the Seine river in Paris:
+
+```{r}
+# Visualize "green" areas retrieved in Paris
+m <- visualize(corridors$Paris, col = "blue")
+m <- visualize(green_areas$Paris, col = "green", map = m)
+m
+```
+
+We thus quantify the green surface, and divide by the overall corridor surface:
+
+```{r}
+# Determine the "green" surface vs the total surface of the corridor
+area_green <- lapply(green_areas, st_area) |> sapply(sum)
+area_corridor <- sapply(corridors, st_area)
+frac <- area_green / area_corridor * 100
+```
+
+Finally we plot the ratio for the ten cities as a bar plot. Note how Warsaw and Cairo turn out to be the cities with the highest and lowest fraction of green surface, respectively.
+
+```{r}
+data <- data.frame(city = names(frac), percentage = unlist(frac))
+ggplot(data, aes(x = city, y = percentage)) +
+  geom_col() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
 ```
 
 ## References
