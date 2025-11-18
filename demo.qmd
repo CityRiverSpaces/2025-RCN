@@ -41,13 +41,13 @@ Writing programming scripts or computational notebooks to perform research tasks
 2.  the corridor **segments**,
 3.  the **river space**.
 
-These units are based on infrastructure data (street & rail network the former two, buildings the latter). In addition, `rcrisp` also makes use of digital terrain data to estimate the river **valley**, the edges of which are used to "guide" the delineation of the river corridor.
+These units are based on infrastructure data (street & rail network, buildings). In addition, `rcrisp` also makes use of digital terrain data to estimate the river **valley**, the edges of which are used to "guide" the delineation of the river corridor.
 
 ## Data sources
 
 By default, `rcrisp` uses the following data sources:
 
--   [OpenStreetMap](https://www.openstreetmap.org/) (OSM), mostly for street & railway network, river geometry, buildings;
+-   [OpenStreetMap](https://www.openstreetmap.org/) (OSM), mostly for street & rail network, buildings, and river geometry;
 -   [GLO-30 Copernicus Digital Elevation Model (DEM)](https://dataspace.copernicus.eu/explore-data/data-collections/copernicus-contributing-missions/collections-description/COP-DEM) for the representation of the topographic surface of the area.
 
 .. but any other data sources could be used as well!
@@ -174,7 +174,7 @@ get_edge_labels <- function(edges) {
 
 The three types of morphological delineations described above can be carried out via the `delineate` function built in `rcrisp`, which works as main access point to the package functionality.
 
-Let's start by defining the name of a city and of a river which we aim to delineate:
+Let's start by defining the name of the city and of the river that we aim to delineate:
 
 ```{r}
 city_name <- "Bucharest"
@@ -236,7 +236,7 @@ city_river_names <- tribble(
 We thus delineate the corridors of the ten urban rivers listed above:
 
 ```{r}
-# Create a list to store all results
+# Create a list where to store all corridors
 corridors <- list()
 
 # Loop over city/river pairs
@@ -244,17 +244,17 @@ for (i in seq(nrow(city_river_names))) {
   city_name <- city_river_names$city_name[i]
   river_name <- city_river_names$river_name[i]
 
-  # Run the delineation for the selected city and river
+  # Run the delineation for the selected city/river
   delineations_city <- delineate(
     city_name = city_name,
     river_name = river_name,
     corridor = TRUE,
   )
 
-  # Extract corridor, tranform to lat/lon
+  # Extract the corridor geometry, tranform to lat/lon
   corridor <- st_transform(delineations_city$corridor, "EPSG:4326")
 
-  # Record corridor for later use
+  # Record corridor for later usage
   corridors[[city_name]] <- corridor
 }
 ```
@@ -270,18 +270,19 @@ addMarkers(map, data = centroids)
 For each corridor, we now retrieve landuse information from OSM to identify parks and other green areas.
 
 ```{r}
+# Create a list where to store all green areas
 green_areas <- list()
 
-# Loop over the delineated corridor
+# Loop over the delineated corridors
 for (i in seq(length(corridors))) {
   city_name <- names(corridors[i])
   corridor <- corridors[[i]]
 
-  # Retrieve footprints of areas with the following tags
+  # Retrieve footprints of green areas based on OSM tags
   parks <- osmdata_as_sf("leisure", "park", aoi = corridor)
   natural <- osmdata_as_sf("natural", c("grassland", "woodland", "wood"), aoi = corridor)
 
-  # Merge all footprints of "green" areas, intersecting with the corridor
+  # Merge all footprints of green areas intersecting the corridor
   all <- c(parks$osm_polygons$geometry, natural$osm_polygons$geometry)
   green_areas[[city_name]] <- st_intersection(all, corridor) |>
     st_make_valid()
@@ -297,7 +298,7 @@ m <- visualize(green_areas$Paris, col = "green", map = m)
 m
 ```
 
-We thus quantify the green surface, and divide by the overall corridor surface:
+We thus quantify the green surface, and divide it by the overall corridor surface:
 
 ```{r}
 # Determine the "green" surface vs the total surface of the corridor
